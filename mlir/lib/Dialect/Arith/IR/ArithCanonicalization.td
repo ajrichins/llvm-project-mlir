@@ -384,4 +384,12 @@ def DivFOfNegF :
         (Arith_DivFOp $x, $y, $fmf),
         [(Constraint<CPred<"$0.getType() == $1.getType()">> $x, $y)]>;
 
+//===----------------------------------------------------------------------===//
+// BAD OPTS
+//===----------------------------------------------------------------------===//
+
+// addi(x, y) -> x
+def replaceAddWithX :
+    Pat<(Arith_AddIOp $x, $y),
+        (replaceWithValue $x)>;
 #endif // ARITH_PATTERNS
