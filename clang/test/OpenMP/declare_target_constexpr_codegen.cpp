@@ -4,7 +4,7 @@
 
 // Test target codegen - host bc file has to be created first.
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=nvptx64-nvidia-cuda -emit-llvm-bc %s -o %t-ppc-host.bc
-// RUN: %clang_cc1 -verify -fopenmp -x c++ -triple nvptx64-unknown-unknown -fopenmp-targets=nvptx64-nvidia-cuda -emit-llvm %s -fopenmp-target-debug -fopenmp-is-device -fopenmp-host-ir-file-path %t-ppc-host.bc -o - | FileCheck %s --check-prefix=CHECK
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -triple nvptx64-unknown-unknown -fopenmp-targets=nvptx64-nvidia-cuda -emit-llvm %s -fopenmp-target-debug -fopenmp-is-target-device -fopenmp-host-ir-file-path %t-ppc-host.bc -o - | FileCheck %s --check-prefix=CHECK
 
 // expected-no-diagnostics
 
@@ -16,7 +16,7 @@ class A {
 public:
   static constexpr double pi = 3.141592653589793116;
 //.
-// CHECK: @_ZN1A2piE = linkonce_odr constant double 0x400921FB54442D18, comdat, align 8
+// CHECK: @_ZN1A2piE = linkonce_odr protected constant double 0x400921FB54442D18, comdat, align 8
 // CHECK: @_ZL9anotherPi = internal constant double 3.140000e+00, align 8
 // CHECK: @llvm.compiler.used = appending global [2 x ptr] [ptr @"__ZN1A2piE$ref", ptr @"__ZL9anotherPi$ref"], section "llvm.metadata"
 //.

@@ -29,7 +29,6 @@ namespace llvm {
 class AAResults;
 class AssumptionCache;
 class BasicBlock;
-class CmpInst;
 class DemandedBits;
 class DominatorTree;
 class Function;
@@ -90,9 +89,6 @@ private:
   /// TODO: We can further reduce this cost if we flush the chain creation
   ///       every time we run into a memory barrier.
   void collectSeedInstructions(BasicBlock *BB);
-
-  /// Try to vectorize a chain that starts at two arithmetic instrs.
-  bool tryToVectorizePair(Value *A, Value *B, slpvectorizer::BoUpSLP &R);
 
   /// Try to vectorize a list of operands.
   /// \param MaxVFOnly Vectorize only using maximal allowed register size.

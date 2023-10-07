@@ -93,6 +93,9 @@ public:
                                                  uint64_t Members) const;
   virtual bool isZeroLengthBitfieldPermittedInHomogeneousAggregate() const;
 
+  /// isHomogeneousAggregate - Return true if a type is an ELFv2 homogeneous
+  /// aggregate.  Base is set to the base element type, and Members is set
+  /// to the number of base elements.
   bool isHomogeneousAggregate(QualType Ty, const Type *&Base,
                               uint64_t &Members) const;
 
@@ -116,6 +119,9 @@ class SwiftABIInfo {
 protected:
   CodeGenTypes &CGT;
   bool SwiftErrorInRegister;
+
+  bool occupiesMoreThan(ArrayRef<llvm::Type *> scalarTypes,
+                        unsigned maxAllRegisters) const;
 
 public:
   SwiftABIInfo(CodeGen::CodeGenTypes &CGT, bool SwiftErrorInRegister)

@@ -23,7 +23,11 @@
 
 namespace llvm {
 class hash_code;
+class Triple;
+namespace opt {
+class ArgList;
 }
+} // namespace llvm
 
 namespace clang {
 
@@ -74,7 +78,7 @@ public:
   llvm::hash_code hash_value() const;
 
   template <typename HasherT, llvm::support::endianness Endianness>
-  friend void addHash(llvm::HashBuilderImpl<HasherT, Endianness> &HBuilder,
+  friend void addHash(llvm::HashBuilder<HasherT, Endianness> &HBuilder,
                       const SanitizerMask &SM) {
     HBuilder.addRange(&SM.maskLoToHigh[0], &SM.maskLoToHigh[kNumElem]);
   }

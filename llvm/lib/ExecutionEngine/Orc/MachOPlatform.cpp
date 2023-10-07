@@ -146,7 +146,7 @@ private:
     Hdr.flags = 0;
     Hdr.reserved = 0;
 
-    if (G.getEndianness() != support::endian::system_endianness())
+    if (G.getEndianness() != llvm::endianness::native)
       MachO::swapStruct(Hdr);
 
     auto HeaderContent = G.allocateContent(
@@ -1370,7 +1370,7 @@ Error MachOPlatform::MachOPlatformPlugin::populateObjCRuntimeObject(
     DataSections.push_back({});
     auto &SD = DataSections.back();
     memset(&SD.Sec, 0, sizeof(SD.Sec));
-    strcpy(SD.Sec.sectname, "__objc_imageinfo");
+    memcpy(SD.Sec.sectname, "__objc_imageinfo", 16);
     strcpy(SD.Sec.segname, "__DATA");
     SD.Sec.size = 8;
     SD.AddFixups = [&](size_t RecordOffset) {
@@ -1460,7 +1460,7 @@ Error MachOPlatform::MachOPlatformPlugin::populateObjCRuntimeObject(
   auto SecContent = SecBlock.getAlreadyMutableContent();
   char *P = SecContent.data();
   auto WriteMachOStruct = [&](auto S) {
-    if (G.getEndianness() != support::endian::system_endianness())
+    if (G.getEndianness() != llvm::endianness::native)
       MachO::swapStruct(S);
     memcpy(P, &S, sizeof(S));
     P += sizeof(S);

@@ -580,7 +580,7 @@ void ASTDeclWriter::VisitDeclaratorDecl(DeclaratorDecl *D) {
 }
 
 void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
-  static_assert(DeclContext::NumFunctionDeclBits == 29,
+  static_assert(DeclContext::NumFunctionDeclBits == 31,
                 "You need to update the serializer after you change the "
                 "FunctionDeclBits");
 
@@ -730,7 +730,7 @@ void ASTDeclWriter::VisitCXXDeductionGuideDecl(CXXDeductionGuideDecl *D) {
   addExplicitSpecifier(D->getExplicitSpecifier(), Record);
   Record.AddDeclRef(D->Ctor);
   VisitFunctionDecl(D);
-  Record.push_back(D->isCopyDeductionCandidate());
+  Record.push_back(static_cast<unsigned char>(D->getDeductionCandidateKind()));
   Code = serialization::DECL_CXX_DEDUCTION_GUIDE;
 }
 
@@ -1136,10 +1136,10 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
       !D->isConstexpr() &&
       !D->isInitCapture() &&
       !D->isPreviousDeclInSameBlockScope() &&
-      !D->hasAttr<BlocksAttr>() &&
       !D->isEscapingByref() &&
       !HasDeducedType &&
       D->getStorageDuration() != SD_Static &&
+      !D->getDescribedVarTemplate() &&
       !D->getMemberSpecializationInfo())
     AbbrevToUse = Writer.getDeclVarAbbrev();
 
@@ -1162,28 +1162,21 @@ void ASTDeclWriter::VisitParmVarDecl(ParmVarDecl *D) {
   Record.push_back(D->hasUninstantiatedDefaultArg());
   if (D->hasUninstantiatedDefaultArg())
     Record.AddStmt(D->getUninstantiatedDefaultArg());
+  Record.AddSourceLocation(D->getExplicitObjectParamThisLoc());
   Code = serialization::DECL_PARM_VAR;
 
   // If the assumptions about the DECL_PARM_VAR abbrev are true, use it.  Here
   // we dynamically check for the properties that we optimize for, but don't
   // know are true of all PARM_VAR_DECLs.
-  if (D->getDeclContext() == D->getLexicalDeclContext() &&
-      !D->hasAttrs() &&
-      !D->hasExtInfo() &&
-      !D->isImplicit() &&
-      !D->isUsed(false) &&
-      !D->isInvalidDecl() &&
-      !D->isReferenced() &&
-      D->getAccess() == AS_none &&
-      !D->isModulePrivate() &&
-      D->getStorageClass() == 0 &&
+  if (D->getDeclContext() == D->getLexicalDeclContext() && !D->hasAttrs() &&
+      !D->hasExtInfo() && !D->isImplicit() && !D->isUsed(false) &&
+      !D->isInvalidDecl() && !D->isReferenced() && D->getAccess() == AS_none &&
+      !D->isModulePrivate() && D->getStorageClass() == 0 &&
       D->getInitStyle() == VarDecl::CInit && // Can params have anything else?
-      D->getFunctionScopeDepth() == 0 &&
-      D->getObjCDeclQualifier() == 0 &&
-      !D->isKNRPromoted() &&
-      !D->hasInheritedDefaultArg() &&
-      D->getInit() == nullptr &&
-      !D->hasUninstantiatedDefaultArg())  // No default expr.
+      D->getFunctionScopeDepth() == 0 && D->getObjCDeclQualifier() == 0 &&
+      !D->isKNRPromoted() && !D->isExplicitObjectParameter() &&
+      !D->hasInheritedDefaultArg() && D->getInit() == nullptr &&
+      !D->hasUninstantiatedDefaultArg()) // No default expr.
     AbbrevToUse = Writer.getDeclParmVarAbbrev();
 
   // Check things we know are true of *every* PARM_VAR_DECL, which is more than
@@ -1495,7 +1488,7 @@ void ASTDeclWriter::VisitCXXMethodDecl(CXXMethodDecl *D) {
 }
 
 void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
-  static_assert(DeclContext::NumCXXConstructorDeclBits == 22,
+  static_assert(DeclContext::NumCXXConstructorDeclBits == 20,
                 "You need to update the serializer after you change the "
                 "CXXConstructorDeclBits");
 
@@ -1774,12 +1767,10 @@ void ASTDeclWriter::VisitTemplateTypeParmDecl(TemplateTypeParmDecl *D) {
   const TypeConstraint *TC = D->getTypeConstraint();
   Record.push_back(TC != nullptr);
   if (TC) {
-    Record.AddNestedNameSpecifierLoc(TC->getNestedNameSpecifierLoc());
-    Record.AddDeclarationNameInfo(TC->getConceptNameInfo());
-    Record.AddDeclRef(TC->getNamedConcept());
-    Record.push_back(TC->getTemplateArgsAsWritten() != nullptr);
-    if (TC->getTemplateArgsAsWritten())
-      Record.AddASTTemplateArgumentListInfo(TC->getTemplateArgsAsWritten());
+    auto *CR = TC->getConceptReference();
+    Record.push_back(CR != nullptr);
+    if (CR)
+      Record.AddConceptReference(CR);
     Record.AddStmt(TC->getImmediatelyDeclaredConstraint());
     Record.push_back(D->isExpandedParameterPack());
     if (D->isExpandedParameterPack())
@@ -2244,8 +2235,8 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(0));                       // InitStyle
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isARCPseudoStrong
   Abv->Add(BitCodeAbbrevOp(0));                       // Linkage
-  Abv->Add(BitCodeAbbrevOp(0));                       // HasInit
-  Abv->Add(BitCodeAbbrevOp(0));                   // HasMemberSpecializationInfo
+  Abv->Add(BitCodeAbbrevOp(0));                       // ModulesCodegen
+  Abv->Add(BitCodeAbbrevOp(0));                       // VarKind (local enum)
   // ParmVarDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // IsObjCMethodParameter
   Abv->Add(BitCodeAbbrevOp(0));                       // ScopeDepth
@@ -2334,8 +2325,8 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(0));                         // EscapingByref
   Abv->Add(BitCodeAbbrevOp(0));                         // HasDeducedType
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); // Linkage
-  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); // HasConstant*
-  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 2)); // VarKind (local enum)
+  Abv->Add(BitCodeAbbrevOp(0));                         // ModulesCodeGen
+  Abv->Add(BitCodeAbbrevOp(0));                         // VarKind (local enum)
   // Type Source Info
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Array));
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // TypeLoc
@@ -2425,6 +2416,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); //HadMultipleCandidates
   Abv->Add(BitCodeAbbrevOp(0)); // RefersToEnclosingVariableOrCapture
   Abv->Add(BitCodeAbbrevOp(0)); // NonOdrUseReason
+  Abv->Add(BitCodeAbbrevOp(0)); // IsImmediateEscalating
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // DeclRef
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Location
   DeclRefExprAbbrev = Stream.EmitAbbrev(std::move(Abv));

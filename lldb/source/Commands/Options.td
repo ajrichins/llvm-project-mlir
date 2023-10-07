@@ -390,7 +390,7 @@ let Command = "expression" in {
     Arg<"Boolean">,
     Desc<"Persist expression result in a variable for subsequent use. "
     "Expression results will be labeled with $-prefixed variables, e.g. $0, "
-    "$1, etc. Defaults to true.">;
+    "$1, etc.">;
 }
 
 let Command = "frame diag" in {
@@ -804,6 +804,9 @@ let Command = "script add" in {
     EnumArg<"ScriptedCommandSynchronicity">,
     Desc<"Set the synchronicity of this command's executions with regard to "
     "LLDB event system.">;
+  def completion_type : Option<"completion-type", "C">,
+  EnumArg<"CompletionType">,
+  Desc<"Specify which completion type the command should use - if none is specified, the command won't use auto-completion.">;
 }
 
 let Command = "container add" in {

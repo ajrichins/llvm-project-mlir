@@ -15,17 +15,16 @@
 #ifndef LLVM_CODEGEN_BASICBLOCKSECTIONSPROFILEREADER_H
 #define LLVM_CODEGEN_BASICBLOCKSECTIONSPROFILEREADER_H
 
-#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/LineIterator.h"
 #include "llvm/Support/MemoryBuffer.h"
-
-using namespace llvm;
 
 namespace llvm {
 
@@ -46,7 +45,8 @@ public:
   static char ID;
 
   BasicBlockSectionsProfileReader(const MemoryBuffer *Buf)
-      : ImmutablePass(ID), MBuf(Buf) {
+      : ImmutablePass(ID), MBuf(Buf),
+        LineIt(*Buf, /*SkipBlanks=*/true, /*CommentMarker=*/'#') {
     initializeBasicBlockSectionsProfileReaderPass(
         *PassRegistry::getPassRegistry());
   };
@@ -73,8 +73,9 @@ public:
   std::pair<bool, SmallVector<BBClusterInfo>>
   getBBClusterInfoForFunction(StringRef FuncName) const;
 
-  /// Read profiles of basic blocks if available here.
-  void initializePass() override;
+  // Initializes the FunctionNameToDIFilename map for the current module and
+  // then reads the profile for matching functions.
+  bool doInitialization(Module &M) override;
 
 private:
   StringRef getAliasName(StringRef FuncName) const {
@@ -82,8 +83,33 @@ private:
     return R == FuncAliasMap.end() ? FuncName : R->second;
   }
 
+  // Returns a profile parsing error for the current line.
+  Error createProfileParseError(Twine Message) const {
+    return make_error<StringError>(
+        Twine("invalid profile " + MBuf->getBufferIdentifier() + " at line " +
+              Twine(LineIt.line_number()) + ": " + Message),
+        inconvertibleErrorCode());
+  }
+
+  // Reads the basic block sections profile for functions in this module.
+  Error ReadProfile();
+
+  // Reads version 0 profile.
+  // TODO: Remove this function once version 0 is deprecated.
+  Error ReadV0Profile();
+
+  // Reads version 1 profile.
+  Error ReadV1Profile();
+
   // This contains the basic-block-sections profile.
   const MemoryBuffer *MBuf = nullptr;
+
+  // Iterator to the line being parsed.
+  line_iterator LineIt;
+
+  // Map from every function name in the module to its debug info filename or
+  // empty string if no debug info is available.
+  StringMap<SmallString<128>> FunctionNameToDIFilename;
 
   // This encapsulates the BB cluster information for the whole program.
   //

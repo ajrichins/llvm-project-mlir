@@ -15,8 +15,8 @@
 ///
 /// This file should only be included by files that implement a
 /// specialization of the relevant templates. Currently these are:
-/// - CycleAnalysis.cpp
-/// - MachineCycleAnalysis.cpp
+/// - llvm/lib/IR/CycleInfo.cpp
+/// - llvm/lib/CodeGen/MachineCycleAnalysis.cpp
 ///
 //===----------------------------------------------------------------------===//
 
@@ -354,12 +354,31 @@ template <typename ContextT> void GenericCycleInfo<ContextT>::clear() {
 template <typename ContextT>
 void GenericCycleInfo<ContextT>::compute(FunctionT &F) {
   GenericCycleInfoCompute<ContextT> Compute(*this);
-  Context.setFunction(F);
+  Context = ContextT(&F);
 
   LLVM_DEBUG(errs() << "Computing cycles for function: " << F.getName()
                     << "\n");
-  Compute.run(ContextT::getEntryBlock(F));
+  Compute.run(&F.front());
 
+  assert(validateTree());
+}
+
+template <typename ContextT>
+void GenericCycleInfo<ContextT>::splitCriticalEdge(BlockT *Pred, BlockT *Succ,
+                                                   BlockT *NewBlock) {
+  // Edge Pred-Succ is replaced by edges Pred-NewBlock and NewBlock-Succ, all
+  // cycles that had blocks Pred and Succ also get NewBlock.
+  CycleT *Cycle = this->getCycle(Pred);
+  if (Cycle && Cycle->contains(Succ)) {
+    while (Cycle) {
+      // FixMe: Appending NewBlock is fine as a set of blocks in a cycle. When
+      // printing cycle NewBlock is at the end of list but it should be in the
+      // middle to represent actual traversal of a cycle.
+      Cycle->appendBlock(NewBlock);
+      BlockMap.try_emplace(NewBlock, Cycle);
+      Cycle = Cycle->getParentCycle();
+    }
+  }
   assert(validateTree());
 }
 
@@ -370,10 +389,7 @@ void GenericCycleInfo<ContextT>::compute(FunctionT &F) {
 template <typename ContextT>
 auto GenericCycleInfo<ContextT>::getCycle(const BlockT *Block) const
     -> CycleT * {
-  auto MapIt = BlockMap.find(Block);
-  if (MapIt != BlockMap.end())
-    return MapIt->second;
-  return nullptr;
+  return BlockMap.lookup(Block);
 }
 
 /// \brief get the depth for the cycle which containing a given block.

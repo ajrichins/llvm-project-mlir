@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Generic MachO LinkGraph buliding code.
+// Generic MachO LinkGraph building code.
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,8 +47,7 @@ Expected<std::unique_ptr<LinkGraph>> MachOLinkGraphBuilder::buildGraph() {
 }
 
 MachOLinkGraphBuilder::MachOLinkGraphBuilder(
-    const object::MachOObjectFile &Obj, Triple TT,
-    LinkGraph::FeatureVector Features,
+    const object::MachOObjectFile &Obj, Triple TT, SubtargetFeatures Features,
     LinkGraph::GetEdgeKindNameFunction GetEdgeKindName)
     : Obj(Obj),
       G(std::make_unique<LinkGraph>(std::string(Obj.getFileName()),
@@ -193,7 +192,7 @@ Error MachOLinkGraphBuilder::createNormalizedSections() {
 
     // TODO: Are there any other criteria for NoAlloc lifetime?
     if (NSec.Flags & MachO::S_ATTR_DEBUG)
-      NSec.GraphSection->setMemLifetimePolicy(orc::MemLifetimePolicy::NoAlloc);
+      NSec.GraphSection->setMemLifetime(orc::MemLifetime::NoAlloc);
 
     IndexToSection.insert(std::make_pair(SecIndex, std::move(NSec)));
   }

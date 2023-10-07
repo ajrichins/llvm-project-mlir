@@ -413,9 +413,13 @@ Error InstrProfWriter::writeImpl(ProfOStream &OS) {
   InfoObj->CSSummaryBuilder = &CSISB;
 
   // Populate the hash table generator.
+  SmallVector<std::pair<StringRef, const ProfilingData *>, 0> OrderedData;
   for (const auto &I : FunctionData)
     if (shouldEncodeData(I.getValue()))
-      Generator.insert(I.getKey(), &I.getValue());
+      OrderedData.emplace_back((I.getKey()), &I.getValue());
+  llvm::sort(OrderedData, less_first());
+  for (const auto &I : OrderedData)
+    Generator.insert(I.first, I.second);
 
   // Write the header.
   IndexedInstrProf::Header Header;
@@ -650,12 +654,16 @@ Error InstrProfWriter::write(raw_fd_ostream &OS) {
   return writeImpl(POS);
 }
 
+Error InstrProfWriter::write(raw_string_ostream &OS) {
+  ProfOStream POS(OS);
+  return writeImpl(POS);
+}
+
 std::unique_ptr<MemoryBuffer> InstrProfWriter::writeBuffer() {
   std::string Data;
   raw_string_ostream OS(Data);
-  ProfOStream POS(OS);
   // Write the hash table.
-  if (Error E = writeImpl(POS))
+  if (Error E = write(OS))
     return nullptr;
   // Return this in an aligned memory buffer.
   return MemoryBuffer::getMemBufferCopy(Data);
@@ -714,7 +722,7 @@ void InstrProfWriter::writeRecordInText(StringRef Name, uint64_t Hash,
       std::unique_ptr<InstrProfValueData[]> VD = Func.getValueForSite(VK, S);
       for (uint32_t I = 0; I < ND; I++) {
         if (VK == IPVK_IndirectCallTarget)
-          OS << Symtab.getFuncNameOrExternalSymbol(VD[I].Value) << ":"
+          OS << Symtab.getFuncOrVarNameIfDefined(VD[I].Value) << ":"
              << VD[I].Count << "\n";
         else
           OS << VD[I].Value << ":" << VD[I].Count << "\n";
@@ -782,7 +790,7 @@ void InstrProfWriter::writeTextTemporalProfTraceData(raw_fd_ostream &OS,
   for (auto &Trace : TemporalProfTraces) {
     OS << "# Weight:\n" << Trace.Weight << "\n";
     for (auto &NameRef : Trace.FunctionNameRefs)
-      OS << Symtab.getFuncName(NameRef) << ",";
+      OS << Symtab.getFuncOrVarName(NameRef) << ",";
     OS << "\n";
   }
   OS << "\n";

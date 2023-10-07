@@ -18,8 +18,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <numeric>
+#include <string_view>
 #include <utility>
 
 using namespace itanium_demangle;
@@ -78,8 +80,8 @@ struct DumpVisitor {
   }
 
   void printStr(const char *S) { fprintf(stderr, "%s", S); }
-  void print(StringView SV) {
-    fprintf(stderr, "\"%.*s\"", (int)SV.size(), SV.begin());
+  void print(std::string_view SV) {
+    fprintf(stderr, "\"%.*s\"", (int)SV.size(), &*SV.begin());
   }
   void print(const Node *N) {
     if (N)

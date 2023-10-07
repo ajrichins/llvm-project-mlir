@@ -417,6 +417,10 @@ void X86FrameLowering::BuildCFI(MachineBasicBlock &MBB,
                                 MachineInstr::MIFlag Flag) const {
   MachineFunction &MF = *MBB.getParent();
   unsigned CFIIndex = MF.addFrameInst(CFIInst);
+
+  if (CFIInst.getOperation() == MCCFIInstruction::OpAdjustCfaOffset)
+    MF.getInfo<X86MachineFunctionInfo>()->setHasCFIAdjustCfa(true);
+
   BuildMI(MBB, MBBI, DL, TII.get(TargetOpcode::CFI_INSTRUCTION))
       .addCFIIndex(CFIIndex)
       .setMIFlag(Flag);
@@ -558,49 +562,13 @@ void X86FrameLowering::emitZeroCallUsedRegs(BitVector RegsToZero,
       RegsToZero.reset(Reg);
     }
 
+  // Zero out the GPRs first.
   for (MCRegister Reg : GPRsToZero.set_bits())
-    BuildMI(MBB, MBBI, DL, TII.get(X86::XOR32rr), Reg)
-        .addReg(Reg, RegState::Undef)
-        .addReg(Reg, RegState::Undef);
+    TII.buildClearRegister(Reg, MBB, MBBI, DL);
 
-  // Zero out registers.
-  for (MCRegister Reg : RegsToZero.set_bits()) {
-    if (ST.hasMMX() && X86::VR64RegClass.contains(Reg))
-      // FIXME: Ignore MMX registers?
-      continue;
-
-    unsigned XorOp;
-    if (X86::VR128RegClass.contains(Reg)) {
-      // XMM#
-      if (!ST.hasSSE1())
-        continue;
-      XorOp = X86::PXORrr;
-    } else if (X86::VR256RegClass.contains(Reg)) {
-      // YMM#
-      if (!ST.hasAVX())
-        continue;
-      XorOp = X86::VPXORrr;
-    } else if (X86::VR512RegClass.contains(Reg)) {
-      // ZMM#
-      if (!ST.hasAVX512())
-        continue;
-      XorOp = X86::VPXORYrr;
-    } else if (X86::VK1RegClass.contains(Reg) ||
-               X86::VK2RegClass.contains(Reg) ||
-               X86::VK4RegClass.contains(Reg) ||
-               X86::VK8RegClass.contains(Reg) ||
-               X86::VK16RegClass.contains(Reg)) {
-      if (!ST.hasVLX())
-        continue;
-      XorOp = ST.hasBWI() ? X86::KXORQrr : X86::KXORWrr;
-    } else {
-      continue;
-    }
-
-    BuildMI(MBB, MBBI, DL, TII.get(XorOp), Reg)
-      .addReg(Reg, RegState::Undef)
-      .addReg(Reg, RegState::Undef);
-  }
+  // Zero out the remaining registers.
+  for (MCRegister Reg : RegsToZero.set_bits())
+    TII.buildClearRegister(Reg, MBB, MBBI, DL);
 }
 
 void X86FrameLowering::emitStackProbe(
@@ -1231,11 +1199,19 @@ uint64_t X86FrameLowering::calculateMaxStackAlign(const MachineFunction &MF) con
   const MachineFrameInfo &MFI = MF.getFrameInfo();
   Align MaxAlign = MFI.getMaxAlign(); // Desired stack alignment.
   Align StackAlign = getStackAlign();
-  if (MF.getFunction().hasFnAttribute("stackrealign")) {
+  bool HasRealign = MF.getFunction().hasFnAttribute("stackrealign");
+  if (HasRealign) {
     if (MFI.hasCalls())
       MaxAlign = (StackAlign > MaxAlign) ? StackAlign : MaxAlign;
     else if (MaxAlign < SlotSize)
       MaxAlign = Align(SlotSize);
+  }
+
+  if (!Is64Bit && MF.getFunction().getCallingConv() == CallingConv::X86_INTR) {
+    if (HasRealign)
+      MaxAlign = (MaxAlign > 16) ? MaxAlign : Align(16);
+    else
+      MaxAlign = Align(16);
   }
   return MaxAlign.value();
 }
@@ -1756,7 +1732,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
         } else {
           // No initial context, store null so that there's no pointer that
           // could be misused.
-          BuildMI(MBB, MBBI, DL, TII.get(X86::PUSH64i8))
+          BuildMI(MBB, MBBI, DL, TII.get(X86::PUSH64i32))
               .addImm(0)
               .setMIFlag(MachineInstr::FrameSetup);
         }
@@ -3251,9 +3227,9 @@ void X86FrameLowering::adjustForSegmentedStacks(
             Reg11)
         .addImm(X86FI->getArgumentStackSize());
   } else {
-    BuildMI(allocMBB, DL, TII.get(X86::PUSHi32))
+    BuildMI(allocMBB, DL, TII.get(X86::PUSH32i))
       .addImm(X86FI->getArgumentStackSize());
-    BuildMI(allocMBB, DL, TII.get(X86::PUSHi32))
+    BuildMI(allocMBB, DL, TII.get(X86::PUSH32i))
       .addImm(StackSize);
   }
 
@@ -3803,7 +3779,23 @@ int X86FrameLowering::getInitialCFAOffset(const MachineFunction &MF) const {
 
 Register
 X86FrameLowering::getInitialCFARegister(const MachineFunction &MF) const {
-  return TRI->getDwarfRegNum(StackPtr, true);
+  return StackPtr;
+}
+
+TargetFrameLowering::DwarfFrameBase
+X86FrameLowering::getDwarfFrameBase(const MachineFunction &MF) const {
+  const TargetRegisterInfo *RI = MF.getSubtarget().getRegisterInfo();
+  Register FrameRegister = RI->getFrameRegister(MF);
+  if (getInitialCFARegister(MF) == FrameRegister &&
+      MF.getInfo<X86MachineFunctionInfo>()->hasCFIAdjustCfa()) {
+    DwarfFrameBase FrameBase;
+    FrameBase.Kind = DwarfFrameBase::CFA;
+    FrameBase.Location.Offset =
+        -MF.getFrameInfo().getStackSize() - getInitialCFAOffset(MF);
+    return FrameBase;
+  }
+
+  return DwarfFrameBase{DwarfFrameBase::Register, {FrameRegister}};
 }
 
 namespace {

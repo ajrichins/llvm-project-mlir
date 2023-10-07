@@ -95,11 +95,14 @@ static void instantiateDependentAlignedAttr(
     if (!Result.isInvalid())
       S.AddAlignedAttr(New, *Aligned, Result.getAs<Expr>(), IsPackExpansion);
   } else {
-    TypeSourceInfo *Result = S.SubstType(Aligned->getAlignmentType(),
-                                         TemplateArgs, Aligned->getLocation(),
-                                         DeclarationName());
-    if (Result)
-      S.AddAlignedAttr(New, *Aligned, Result, IsPackExpansion);
+    if (TypeSourceInfo *Result =
+            S.SubstType(Aligned->getAlignmentType(), TemplateArgs,
+                        Aligned->getLocation(), DeclarationName())) {
+      if (!S.CheckAlignasTypeArgument(Aligned->getSpelling(), Result,
+                                      Aligned->getLocation(),
+                                      Result->getTypeLoc().getSourceRange()))
+        S.AddAlignedAttr(New, *Aligned, Result, IsPackExpansion);
+    }
   }
 }
 
@@ -299,7 +302,15 @@ static void instantiateDependentCUDALaunchBoundsAttr(
     MinBlocks = Result.getAs<Expr>();
   }
 
-  S.AddLaunchBoundsAttr(New, Attr, MaxThreads, MinBlocks);
+  Expr *MaxBlocks = nullptr;
+  if (Attr.getMaxBlocks()) {
+    Result = S.SubstExpr(Attr.getMaxBlocks(), TemplateArgs);
+    if (Result.isInvalid())
+      return;
+    MaxBlocks = Result.getAs<Expr>();
+  }
+
+  S.AddLaunchBoundsAttr(New, Attr, MaxThreads, MinBlocks, MaxBlocks);
 }
 
 static void
@@ -1426,11 +1437,14 @@ Decl *TemplateDeclInstantiator::VisitStaticAssertDecl(StaticAssertDecl *D) {
   if (InstantiatedAssertExpr.isInvalid())
     return nullptr;
 
-  return SemaRef.BuildStaticAssertDeclaration(D->getLocation(),
-                                              InstantiatedAssertExpr.get(),
-                                              D->getMessage(),
-                                              D->getRParenLoc(),
-                                              D->isFailed());
+  ExprResult InstantiatedMessageExpr =
+      SemaRef.SubstExpr(D->getMessage(), TemplateArgs);
+  if (InstantiatedMessageExpr.isInvalid())
+    return nullptr;
+
+  return SemaRef.BuildStaticAssertDeclaration(
+      D->getLocation(), InstantiatedAssertExpr.get(),
+      InstantiatedMessageExpr.get(), D->getRParenLoc(), D->isFailed());
 }
 
 Decl *TemplateDeclInstantiator::VisitEnumDecl(EnumDecl *D) {
@@ -2126,9 +2140,8 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(
     Function = CXXDeductionGuideDecl::Create(
         SemaRef.Context, DC, D->getInnerLocStart(),
         InstantiatedExplicitSpecifier, NameInfo, T, TInfo,
-        D->getSourceRange().getEnd());
-    if (DGuide->isCopyDeductionCandidate())
-      cast<CXXDeductionGuideDecl>(Function)->setIsCopyDeductionCandidate();
+        D->getSourceRange().getEnd(), DGuide->getCorrespondingConstructor(),
+        DGuide->getDeductionCandidateKind());
     Function->setAccess(D->getAccess());
   } else {
     Function = FunctionDecl::Create(
@@ -2420,6 +2433,9 @@ Decl *TemplateDeclInstantiator::VisitCXXMethodDecl(
     !(isa<Decl>(Owner) &&
       cast<Decl>(Owner)->isDefinedOutsideFunctionOrMethod());
   LocalInstantiationScope Scope(SemaRef, MergeWithParentScope);
+
+  Sema::LambdaScopeForCallOperatorInstantiationRAII LambdaScope(
+      SemaRef, const_cast<CXXMethodDecl *>(D), TemplateArgs, Scope);
 
   // Instantiate enclosing template arguments for friends.
   SmallVector<TemplateParameterList *, 4> TempParamLists;
@@ -4418,7 +4434,7 @@ TemplateDeclInstantiator::SubstFunctionType(FunctionDecl *D,
   Qualifiers ThisTypeQuals;
   if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(D)) {
     ThisContext = cast<CXXRecordDecl>(Owner);
-    ThisTypeQuals = Method->getMethodQualifiers();
+    ThisTypeQuals = Method->getFunctionObjectParameterType().getQualifiers();
   }
 
   TypeSourceInfo *NewTInfo = SemaRef.SubstFunctionDeclType(
@@ -4505,6 +4521,36 @@ TemplateDeclInstantiator::SubstFunctionType(FunctionDecl *D,
   }
 
   return NewTInfo;
+}
+
+/// Introduce the instantiated local variables into the local
+/// instantiation scope.
+void Sema::addInstantiatedLocalVarsToScope(FunctionDecl *Function,
+                                           const FunctionDecl *PatternDecl,
+                                           LocalInstantiationScope &Scope) {
+  LambdaScopeInfo *LSI = cast<LambdaScopeInfo>(getFunctionScopes().back());
+
+  for (auto *decl : PatternDecl->decls()) {
+    if (!isa<VarDecl>(decl) || isa<ParmVarDecl>(decl))
+      continue;
+
+    VarDecl *VD = cast<VarDecl>(decl);
+    IdentifierInfo *II = VD->getIdentifier();
+
+    auto it = llvm::find_if(Function->decls(), [&](Decl *inst) {
+      VarDecl *InstVD = dyn_cast<VarDecl>(inst);
+      return InstVD && InstVD->isLocalVarDecl() &&
+             InstVD->getIdentifier() == II;
+    });
+
+    if (it == Function->decls().end())
+      continue;
+
+    Scope.InstantiatedLocal(VD, *it);
+    LSI->addCapture(cast<VarDecl>(*it), /*isBlock=*/false, /*isByref=*/false,
+                    /*isNested=*/false, VD->getLocation(), SourceLocation(),
+                    VD->getType(), /*Invalid=*/false);
+  }
 }
 
 /// Introduce the instantiated function parameters into the local
@@ -4982,8 +5028,10 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
   // unimported module.
   Function->setVisibleDespiteOwningModule();
 
-  // Copy the inner loc start from the pattern.
+  // Copy the source locations from the pattern.
+  Function->setLocation(PatternDecl->getLocation());
   Function->setInnerLocStart(PatternDecl->getInnerLocStart());
+  Function->setRangeEnd(PatternDecl->getEndLoc());
 
   EnterExpressionEvaluationContext EvalContext(
       *this, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
@@ -5057,6 +5105,7 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     } IR{*this, PatternRec, NewRec};
 
     TypeSourceInfo *NewSI = IR.TransformType(Function->getTypeSourceInfo());
+    assert(NewSI && "Type Transform failed?");
     Function->setType(NewSI->getType());
     Function->setTypeSourceInfo(NewSI);
 
@@ -5084,6 +5133,10 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     // Enter the scope of this instantiation. We don't use
     // PushDeclContext because we don't have a scope.
     Sema::ContextRAII savedContext(*this, Function);
+
+    FPFeaturesStateRAII SavedFPFeatures(*this);
+    CurFPFeatures = FPOptions(getLangOpts());
+    FpPragmaStack.CurrentValue = FPOptionsOverride();
 
     if (addInstantiatedParametersToScope(Function, PatternDecl, Scope,
                                          TemplateArgs))

@@ -22,7 +22,6 @@
 #include "lldb/Utility/StreamString.h"
 
 #include "DWARFCompileUnit.h"
-#include "DWARFDebugAbbrev.h"
 #include "DWARFDebugAranges.h"
 #include "DWARFDebugInfo.h"
 #include "DWARFDebugRanges.h"
@@ -31,6 +30,8 @@
 #include "DWARFUnit.h"
 #include "SymbolFileDWARF.h"
 #include "SymbolFileDWARFDwo.h"
+
+#include "llvm/DebugInfo/DWARF/DWARFDebugAbbrev.h"
 
 using namespace lldb_private;
 using namespace lldb_private::dwarf;
@@ -636,15 +637,16 @@ bool DWARFDebugInfoEntry::GetAttributeAddressRange(
   return false;
 }
 
-size_t DWARFDebugInfoEntry::GetAttributeAddressRanges(
-    DWARFUnit *cu, DWARFRangeList &ranges, bool check_hi_lo_pc,
+DWARFRangeList DWARFDebugInfoEntry::GetAttributeAddressRanges(
+    DWARFUnit *cu, bool check_hi_lo_pc,
     bool check_specification_or_abstract_origin) const {
-  ranges.Clear();
 
   DWARFFormValue form_value;
-  if (GetAttributeValue(cu, DW_AT_ranges, form_value)) {
-    ranges = GetRangesOrReportError(*cu, *this, form_value);
-  } else if (check_hi_lo_pc) {
+  if (GetAttributeValue(cu, DW_AT_ranges, form_value))
+    return GetRangesOrReportError(*cu, *this, form_value);
+
+  DWARFRangeList ranges;
+  if (check_hi_lo_pc) {
     dw_addr_t lo_pc = LLDB_INVALID_ADDRESS;
     dw_addr_t hi_pc = LLDB_INVALID_ADDRESS;
     if (GetAttributeAddressRange(cu, lo_pc, hi_pc, LLDB_INVALID_ADDRESS,
@@ -653,7 +655,7 @@ size_t DWARFDebugInfoEntry::GetAttributeAddressRanges(
         ranges.Append(DWARFRangeList::Entry(lo_pc, hi_pc - lo_pc));
     }
   }
-  return ranges.GetSize();
+  return ranges;
 }
 
 // GetName
@@ -716,9 +718,8 @@ void DWARFDebugInfoEntry::BuildFunctionAddressRangeTable(
     DWARFUnit *cu, DWARFDebugAranges *debug_aranges) const {
   if (m_tag) {
     if (m_tag == DW_TAG_subprogram) {
-      DWARFRangeList ranges;
-      GetAttributeAddressRanges(cu, ranges,
-                                /*check_hi_lo_pc=*/true);
+      DWARFRangeList ranges =
+          GetAttributeAddressRanges(cu, /*check_hi_lo_pc=*/true);
       for (const auto &r : ranges) {
         debug_aranges->AppendRange(GetOffset(), r.GetRangeBase(),
                                    r.GetRangeEnd());
@@ -810,14 +811,17 @@ lldb::offset_t DWARFDebugInfoEntry::GetFirstAttributeOffset() const {
   return GetOffset() + llvm::getULEB128Size(m_abbr_idx);
 }
 
-const DWARFAbbreviationDeclaration *
+const llvm::DWARFAbbreviationDeclaration *
 DWARFDebugInfoEntry::GetAbbreviationDeclarationPtr(const DWARFUnit *cu) const {
-  if (cu) {
-    const DWARFAbbreviationDeclarationSet *abbrev_set = cu->GetAbbreviations();
-    if (abbrev_set)
-      return abbrev_set->GetAbbreviationDeclaration(m_abbr_idx);
-  }
-  return nullptr;
+  if (!cu)
+    return nullptr;
+
+  const llvm::DWARFAbbreviationDeclarationSet *abbrev_set =
+      cu->GetAbbreviations();
+  if (!abbrev_set)
+    return nullptr;
+
+  return abbrev_set->getAbbreviationDeclaration(m_abbr_idx);
 }
 
 bool DWARFDebugInfoEntry::IsGlobalOrStaticScopeVariable() const {

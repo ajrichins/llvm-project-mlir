@@ -268,6 +268,17 @@ bool MCPlusBuilder::clearOffset(MCInst &Inst) {
   return true;
 }
 
+std::optional<MCSymbol *> MCPlusBuilder::getLabel(const MCInst &Inst) const {
+  if (auto Label = tryGetAnnotationAs<MCSymbol *>(Inst, MCAnnotation::kLabel))
+    return *Label;
+  return std::nullopt;
+}
+
+bool MCPlusBuilder::setLabel(MCInst &Inst, MCSymbol *Label) {
+  getOrCreateAnnotationAs<MCSymbol *>(Inst, MCAnnotation::kLabel) = Label;
+  return true;
+}
+
 bool MCPlusBuilder::hasAnnotation(const MCInst &Inst, unsigned Index) const {
   const MCInst *AnnotationInst = getAnnotationInst(Inst);
   if (!AnnotationInst)
@@ -425,7 +436,7 @@ bool MCPlusBuilder::hasDefOfPhysReg(const MCInst &MI, unsigned Reg) const {
 bool MCPlusBuilder::hasUseOfPhysReg(const MCInst &MI, unsigned Reg) const {
   const MCInstrDesc &InstInfo = Info->get(MI.getOpcode());
   for (int I = InstInfo.NumDefs; I < InstInfo.NumOperands; ++I)
-    if (MI.getOperand(I).isReg() &&
+    if (MI.getOperand(I).isReg() && MI.getOperand(I).getReg() &&
         RegInfo->isSubRegisterEq(Reg, MI.getOperand(I).getReg()))
       return true;
   for (MCPhysReg ImplicitUse : InstInfo.implicit_uses()) {
